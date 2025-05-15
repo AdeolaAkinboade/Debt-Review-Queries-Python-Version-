@@ -1,0 +1,79 @@
+import pyodbc
+import pandas as pd
+from datetime import datetime
+
+def debt_review_etl_pipeline():
+    """
+    Python ETL version of the DebtReview_Clients_Server_All_Present_Debt_Review_Clients_MTD stored procedure
+    """
+    try:
+        # Connection parameters
+        server = '[DebtReview]'
+        database = 'DebtCounsellingClients'
+        username = 'usernameak'
+        password = 'usernameak'
+        
+        # Establish connection
+        conn_str = f'DRIVER={{SQL Server}};SERVER={DebtReview};DATABASE={DebtCounsellingClients};UID={usernameak};PWD={usernameak}'
+        conn = pyodbc.connect(conn_str)
+        
+        query = """
+        SELECT DISTINCT 
+            k.[identity_no] AS [Client_IDNumber],
+            d.FN AS [Client_First_Name],
+            d.LN AS [Client_Last_Name],
+            m.cellno AS [Cellphone_Number],
+            m.emailadd AS [Email_Address],
+            k.[statuscheck] AS [Debt_Review_Status],
+            k.[signup] AS [Signed_Up_Status],
+            COALESCE(k.[spouseidno],'None') AS [Spouse_IDNumber],
+            DATEDIFF(YEAR,d.Birth_Date,GETDATE()) AS [Client_Age],
+            DATEDIFF(MONTH,GETDATE(),n.End_Date) AS [Debt_Review_End_Date],
+            DATEDIFF(MONTH,k.sign_up_date,GETDATE()) AS [Months_In_Debt_Review]
+        FROM [DebtCounsellingSummaration].[sum].[clientsummary] k
+        LEFT JOIN [DebtCounsellingClients].[debtcounselling].[clientinfo] m 
+            ON m.identity_no = k.identity_no
+        OUTER APPLY (
+            SELECT TOP 1 COALESCE(c.final_payment_date,'') AS [End_Date] 
+            FROM [DebtCounsellingSummaration].[sum].[clientaccountinfo] c 
+            WHERE m.primarykey = c.primarykey  
+            AND c.clientaccountno NOT LIKE '%LF%'
+            AND c.clientaccountno NOT LIKE '%FN%'
+            AND c.clientaccountno NOT LIKE '%CL%'
+            AND c.clientaccountno NOT LIKE '%AF%'
+            AND c.clientaccountno NOT LIKE '%LIFE%'          
+            AND c.clientaccountno NOT IN ('SignUpFees') 
+            ORDER BY c.final_payment_date DESC
+        ) n
+        LEFT JOIN [DebtReviewSignUp].[sign].[signupinfo] c 
+            ON k.key1 = c.key1
+        LEFT JOIN [DebtReviewSignUp].[sign].[erm_person] d 
+            ON d.key2 = c.key2
+        WHERE DATEDIFF(MONTH, sign_up_date,GETDATE()) IN (3,6,9,12,18,24,36)
+        AND DebtReview_Status IN ('Currently Active')
+        """
+        
+        df = pd.read_sql(query, conn)
+        
+        current_date = datetime.now()
+        
+        active_clients = df[df['Debt_Review_Status'] == 'Currently Active']
+        
+        active_clients.to_csv('active_debt_review_clients.csv', index=False)
+        
+        active_clients.to_parquet('active_debt_review_clients.parquet', index=False)
+        
+        
+        print("ETL pipeline completed successfully!")
+        print(f"Processed {len(active_clients)} active debt review clients")
+        
+        return active_clients
+        
+    except Exception as e:
+        print(f"Error in ETL pipeline: {str(e)}")
+        raise
+    finally:
+        if 'conn' in locals():
+            conn.close()
+if __name__ == "__main__":
+    debt_review_etl_pipeline()
